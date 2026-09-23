@@ -7,13 +7,13 @@ on:
     branches:
       - main
 
+
 permissions:
   contents: read
   packages: write
 
 
 jobs:
-
   # ============================================================
   # TRAIN
   # ============================================================
@@ -70,10 +70,21 @@ jobs:
 
       - name: Show training metrics
         run: |
+          echo "Training metrics:"
           cat artifacts/metrics.json
 
 
-      - name: Upload model artifact
+      - name: Verify model artifacts
+        run: |
+          ls -lah artifacts
+
+          test -f artifacts/model.joblib
+          test -f artifacts/model_metadata.json
+          test -f artifacts/metrics.json
+          test -f artifacts/classification_report.json
+
+
+      - name: Upload trained model artifact
         uses: actions/upload-artifact@v4
         with:
           name: trained-model
@@ -83,6 +94,7 @@ jobs:
             artifacts/metrics.json
             artifacts/classification_report.json
           if-no-files-found: error
+          retention-days: 7
 
 
   # ============================================================
@@ -101,7 +113,7 @@ jobs:
         uses: actions/checkout@v4
 
 
-      - name: Download trained model
+      - name: Download trained model artifact
         uses: actions/download-artifact@v4
         with:
           name: trained-model
@@ -110,7 +122,11 @@ jobs:
 
       - name: Verify downloaded artifacts
         run: |
+          echo "Downloaded artifacts:"
           ls -lah artifacts
+
+          test -f artifacts/model.joblib
+          test -f artifacts/model_metadata.json
 
 
       - name: Build inference Docker image
@@ -131,23 +147,36 @@ jobs:
       - name: Wait for inference service
         run: |
           for i in {1..30}; do
-            if curl --fail http://127.0.0.1:8000/health; then
+
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              http://127.0.0.1:8000/health
+            then
+              echo
               echo "Inference service is ready."
               exit 0
             fi
 
             echo "Waiting for inference service..."
             sleep 2
+
           done
 
           echo "Inference service failed to start."
+
           docker logs customer-support-cicd-api
+
           exit 1
 
 
       - name: Smoke test prediction
         run: |
-          RESPONSE=$(curl --fail \
+          RESPONSE=$(curl \
+            --fail \
+            --silent \
+            --show-error \
             -X POST \
             http://127.0.0.1:8000/predict \
             -H "Content-Type: application/json" \
@@ -159,10 +188,15 @@ jobs:
           echo "$RESPONSE" | grep "ACCESS_ACCOUNT"
 
 
-      - name: Show container logs
+      - name: Show inference container logs
         if: always()
         run: |
           docker logs customer-support-cicd-api || true
+
+
+      - name: Prepare GHCR image name
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/creator-support-mlops-api" >> "$GITHUB_ENV"
 
 
       - name: Log in to GitHub Container Registry
@@ -179,5 +213,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/creator-support-mlops-api:latest
-            ghcr.io/${{ github.repository_owner }}/creator-support-mlops-api:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
