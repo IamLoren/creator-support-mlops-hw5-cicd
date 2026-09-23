@@ -1,0 +1,5 @@
+outs:
+- md5: 19d2c69b46f2a24ad8cf0e2331547d4b
+  size: 40736
+  hash: md5
+  path: customer_support_intents.json

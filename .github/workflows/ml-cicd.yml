@@ -1,0 +1,183 @@
+name: ML CI/CD Pipeline
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+
+jobs:
+
+  # ============================================================
+  # TRAIN
+  # ============================================================
+
+  train:
+    name: Train model
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+
+      - name: Install training dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-training.txt
+
+
+      - name: Configure DVC remote
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        run: |
+          dvc remote modify --local r2 endpointurl "$R2_ENDPOINT_URL"
+          dvc remote modify --local r2 access_key_id "$R2_ACCESS_KEY_ID"
+          dvc remote modify --local r2 secret_access_key "$R2_SECRET_ACCESS_KEY"
+
+
+      - name: Pull dataset with DVC
+        run: |
+          dvc pull
+
+
+      - name: Validate dataset
+        run: |
+          python scripts/validate_dataset.py \
+            --input data/annotated/customer_support_intents.json \
+            --expected-records 144 \
+            --expected-scenarios 72
+
+
+      - name: Train model
+        run: |
+          python training/train.py
+
+
+      - name: Show training metrics
+        run: |
+          cat artifacts/metrics.json
+
+
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-model
+          path: |
+            artifacts/model.joblib
+            artifacts/model_metadata.json
+            artifacts/metrics.json
+            artifacts/classification_report.json
+          if-no-files-found: error
+
+
+  # ============================================================
+  # DEPLOY
+  # ============================================================
+
+  deploy:
+    name: Deploy inference image
+    runs-on: ubuntu-latest
+
+    needs:
+      - train
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      - name: Download trained model
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+          path: artifacts
+
+
+      - name: Verify downloaded artifacts
+        run: |
+          ls -lah artifacts
+
+
+      - name: Build inference Docker image
+        run: |
+          docker build \
+            -t customer-support-cicd-api:${{ github.sha }} \
+            .
+
+
+      - name: Start inference container
+        run: |
+          docker run -d \
+            --name customer-support-cicd-api \
+            -p 8000:8000 \
+            customer-support-cicd-api:${{ github.sha }}
+
+
+      - name: Wait for inference service
+        run: |
+          for i in {1..30}; do
+            if curl --fail http://127.0.0.1:8000/health; then
+              echo "Inference service is ready."
+              exit 0
+            fi
+
+            echo "Waiting for inference service..."
+            sleep 2
+          done
+
+          echo "Inference service failed to start."
+          docker logs customer-support-cicd-api
+          exit 1
+
+
+      - name: Smoke test prediction
+        run: |
+          RESPONSE=$(curl --fail \
+            -X POST \
+            http://127.0.0.1:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"text":"I cannot access my account."}')
+
+          echo "Prediction response:"
+          echo "$RESPONSE"
+
+          echo "$RESPONSE" | grep "ACCESS_ACCOUNT"
+
+
+      - name: Show container logs
+        if: always()
+        run: |
+          docker logs customer-support-cicd-api || true
+
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+
+      - name: Build and push deployment image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/creator-support-mlops-api:latest
+            ghcr.io/${{ github.repository_owner }}/creator-support-mlops-api:${{ github.sha }}

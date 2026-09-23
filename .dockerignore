@@ -1,0 +1,12 @@
+.git/
+.github/
+.venv/
+__pycache__/
+*.py[cod]
+
+data/
+.dvc/
+.env
+
+artifacts/metrics.json
+artifacts/classification_report.json

@@ -1,0 +1,4 @@
+[core]
+    remote = r2
+['remote "r2"']
+    url = s3://creator-support-mlops-data/dvc

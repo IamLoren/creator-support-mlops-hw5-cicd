@@ -1,0 +1,21 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+.env
+.pytest_cache/
+
+# Local MLflow state
+mlflow.db
+mlartifacts/
+
+# Local trained artifacts
+artifacts/
+model/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
